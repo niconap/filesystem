@@ -51,10 +51,23 @@ def parse_superblock(sbdata):
     return sbdict
 
 
-def parse_inode_table(f, sbdict):
+def parse_inode_table(f, sbdict, num):
+    '''
+    This function takes all the data from the inode table and puts it in the
+    dictionary.
+
+    Parameters:
+        f (file): The file of the disk image.
+        sbdict (dict): The dictionary with all the data from the superblock.
+        num (int): The number of the inode.
+    
+    Returns:
+        inode_dict (dict): The dictionary with all the data from the inode.
+    '''
     inode_table_offset = BLOCK_SIZE * 2 + \
         (math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
-        (math.ceil(sbdict['nzones'] / 8 / BLOCK_SIZE) * BLOCK_SIZE)
+        (math.ceil(sbdict['nzones'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
+        num * BLOCK_SIZE
     f.seek(inode_table_offset, 0)
     inode_table_data = f.read(BLOCK_SIZE)
     inode_dict = {}
@@ -102,10 +115,13 @@ def parse_inode_table(f, sbdict):
         "<H", inode_table_data[idx: idx + 2])
     idx += 2
 
-    print("inode: " + str(inode_dict))
+    # The mode value is an octal number, so it has to be converted.
+    inode_dict['mode'] = oct(inode_dict['mode'])
+
+    return inode_dict
 
 
-def listdir(f, sbdict, block_nr):
+def listdir(f, directory):
     '''
     This function lists all the directories and files in the root directory.
 
@@ -115,7 +131,7 @@ def listdir(f, sbdict, block_nr):
     '''
 
     # The first data block (root) can be found at first_data_zone.
-    f.seek(BLOCK_SIZE * (sbdict["first_data"] + block_nr), 0)
+    f.seek(BLOCK_SIZE * directory, 0)
     root_data = f.read(BLOCK_SIZE)
 
     if sbdict["magic"] == 0x137F:
@@ -132,7 +148,26 @@ def listdir(f, sbdict, block_nr):
             sys.stdout.buffer.write(printname)
             sys.stdout.buffer.write(b"\n")
 
-    # TO-DO: Go to the next block using the inodes.
+
+def catfile(f, sbdict, path):
+    # Parse the path name.
+    path = path.split('/')
+    filename = path.pop()
+
+    # Start in the root directory.
+    f.seek(BLOCK_SIZE * sbdict['first_data'], 0)
+
+    # TO DO: Loop over all directories in path to find inode_num
+    for directory in path:
+        pass
+
+    # TO DO: Find inode_num of file to retrieve data
+    file_inode = parse_inode_table(f, sbdict, inode_num)
+    for i in range(7):
+        if file_inode['zone' + str(i)] != 0:
+            f.seek(BLOCK_SIZE * file_inode['zone' + str(i)], 0)
+            data = f.read(BLOCK_SIZE)
+            sys.stdout.buffer.write(data)
 
 
 if __name__ == "__main__":
@@ -142,6 +177,12 @@ if __name__ == "__main__":
 
     diskimg = sys.argv[1]
     cmd = sys.argv[2]
+    if cmd == 'cat':
+        if len(sys.argv) >= 3:
+            filepath = sys.argv[3]
+        else:
+            print("Usage: mfstool.py image cat filepath")
+            sys.exit(0)
 
     with open(diskimg, "rb") as f:
         # Skip boot block
@@ -151,9 +192,9 @@ if __name__ == "__main__":
 
         sbdict = parse_superblock(sbdata)
 
-        print("superblock: " + str(sbdict))
-
-        parse_inode_table(f, sbdict)
-
         if cmd == 'ls':
-            listdir(f, sbdict, 0)
+            inode = parse_inode_table(f, sbdict, 0)
+            for i in range(7):
+                listdir(f, inode['zone' + str(i)])
+        elif cmd == 'cat':
+            catfile(f, sbdict, filepath)
