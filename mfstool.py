@@ -12,6 +12,7 @@ import struct
 import math
 
 BLOCK_SIZE = 1024
+INODE_SIZE = 32
 
 
 def parse_superblock(sbdata):
@@ -19,7 +20,7 @@ def parse_superblock(sbdata):
     This function takes all the data from the superblock and puts it in the
     dictionary.
 
-    Parameters:
+    Input:
         sbdata (bytes): The data from the superblock.
 
     Returns:
@@ -51,23 +52,22 @@ def parse_superblock(sbdata):
     return sbdict
 
 
-def parse_inode_table(f, sbdict, num):
+def parse_inode(f, sbdict, num):
     '''
-    This function takes all the data from the inode table and puts it in the
-    dictionary.
+    This function finds an inode and returns all of its data in a dictionary.
 
-    Parameters:
+    Input:
         f (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
         num (int): The number of the inode.
-    
+
     Returns:
         inode_dict (dict): The dictionary with all the data from the inode.
     '''
     inode_table_offset = BLOCK_SIZE * 2 + \
         (math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
         (math.ceil(sbdict['nzones'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
-        num * BLOCK_SIZE
+        num * INODE_SIZE
     f.seek(inode_table_offset, 0)
     inode_table_data = f.read(BLOCK_SIZE)
     inode_dict = {}
@@ -125,7 +125,7 @@ def listdir(f, directory):
     '''
     This function lists all the directories and files in the root directory.
 
-    Parameters:
+    Input:
         diskimg (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
     '''
@@ -149,25 +149,48 @@ def listdir(f, directory):
             sys.stdout.buffer.write(b"\n")
 
 
-def catfile(f, sbdict, path):
-    # Parse the path name.
-    path = path.split('/')
+def find_inode(f, path, sbdict):
+    '''
+    This function finds the inode number of the file specified by path.
+
+    Input:
+        f (file): The file of the disk image.
+        path (str): The path of the file.
+        sbdict (dict): The dictionary with all the data from the superblock.
+
+    Returns:
+        inode_num (int): The inode number of the file.
+    '''
+    # Parse the path name and encode it.
+    path = list(map(lambda x: x.encode(), path.split('/')))
     filename = path.pop()
+    inode_num = 0
+    root_inode = parse_inode(f, sbdict, 0)
 
-    # Start in the root directory.
-    f.seek(BLOCK_SIZE * sbdict['first_data'], 0)
+    if sbdict["magic"] == 0x137F:
+        name_len = 14
+    else:
+        name_len = 30
 
-    # TO DO: Loop over all directories in path to find inode_num
-    for directory in path:
-        pass
+    # Start in the root directory and find the inode of the first path name.
+    # Do that for each path name until none are left. Then in the last dir
+    # find the file and return its inode number.
 
-    # TO DO: Find inode_num of file to retrieve data
-    file_inode = parse_inode_table(f, sbdict, inode_num)
-    for i in range(7):
-        if file_inode['zone' + str(i)] != 0:
-            f.seek(BLOCK_SIZE * file_inode['zone' + str(i)], 0)
-            data = f.read(BLOCK_SIZE)
-            sys.stdout.buffer.write(data)
+    return inode_num
+
+
+def catfile(f, sbdict, path):
+    '''
+    This function prints the contents of the file specified by path.
+
+    Input:
+        f (file): The file of the disk image.
+        sbdict (dict): The dictionary with all the data from the superblock.
+        path (str): The path of the file.
+    '''
+    inode_num = find_inode(f, path, sbdict)
+    inode = parse_inode(f, sbdict, inode_num)
+    print(inode)
 
 
 if __name__ == "__main__":
@@ -193,7 +216,7 @@ if __name__ == "__main__":
         sbdict = parse_superblock(sbdata)
 
         if cmd == 'ls':
-            inode = parse_inode_table(f, sbdict, 0)
+            inode = parse_inode(f, sbdict, 0)
             for i in range(7):
                 listdir(f, inode['zone' + str(i)])
         elif cmd == 'cat':
