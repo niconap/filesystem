@@ -151,7 +151,9 @@ def listdir(f, directory):
 
 def find_inode(f, path, sbdict):
     '''
-    This function finds the inode number of the file specified by path.
+    This function finds the inode number of the file specified by path. The
+    function returns -1 if the file was not found or if the given path does
+    not point to a file.
 
     Input:
         f (file): The file of the disk image.
@@ -162,9 +164,8 @@ def find_inode(f, path, sbdict):
         inode_num (int): The inode number of the file.
     '''
     # Parse the path name and encode it.
-    path = list(map(lambda x: x.encode(), path.split('/')))
+    path = path.split('/')
     filename = path.pop()
-    inode_num = 0
     root_inode = parse_inode(f, sbdict, 0)
 
     if sbdict["magic"] == 0x137F:
@@ -172,11 +173,44 @@ def find_inode(f, path, sbdict):
     else:
         name_len = 30
 
-    # Start in the root directory and find the inode of the first path name.
-    # Do that for each path name until none are left. Then in the last dir
-    # find the file and return its inode number.
+    i = 0
 
-    return inode_num
+    # This variable is used to check whether we need to switch the directory.
+    dirswitch = False
+
+    while True:
+        if root_inode[f"zone{i}"] == 0:
+            break
+        f.seek(BLOCK_SIZE * root_inode[f"zone{i}"], 0)
+        root_data = f.read(BLOCK_SIZE)
+
+        # Iterate over each dir entry to find the next dir or file.
+        for j in range(2, len(root_data), name_len + 2):
+            name = struct.unpack(
+                f"<{name_len}s", root_data[j: j + name_len])[0]
+            inode_num = struct.unpack("<H", root_data[j - 2: j])[0]
+
+            name_str = name.rstrip(b"\0").decode()
+
+            if len(path) > 0 and name_str == path[0]:
+                root_inode = parse_inode(f, sbdict, inode_num - 1)
+                path.pop(0)
+                dirswitch = True
+                break
+            elif name_str == filename:
+                inode = parse_inode(f, sbdict, inode_num - 1)
+                if 0o100000 <= int(inode['mode'], 8) <= 0o120000:
+                    return inode_num - 1
+                return -1
+
+        if dirswitch:
+            i = 0
+            dirswitch = False
+            continue
+        else:
+            i += 1
+
+    return -1
 
 
 def catfile(f, sbdict, path):
@@ -190,7 +224,7 @@ def catfile(f, sbdict, path):
     '''
     inode_num = find_inode(f, path, sbdict)
     inode = parse_inode(f, sbdict, inode_num)
-    print(inode)
+    print(inode_num)
 
 
 if __name__ == "__main__":
