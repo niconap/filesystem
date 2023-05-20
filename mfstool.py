@@ -11,6 +11,7 @@ mfstool.py:
 import sys
 import struct
 import math
+import time
 
 BLOCK_SIZE = 1024
 INODE_SIZE = 32
@@ -211,7 +212,7 @@ def create_inode(f, sbdict, type):
         inode_num (int): The inode number of the new inode (index starts at 0).
     '''
     if type != 'f' and type != 'd':
-        print("Error: invalid type")
+        sys.stderr.buffer.write(("Error: invalid type").encode())
         return -1
     inode = {}
     inode['mode'] = 0o100664 if type == 'f' else 0o40775
@@ -234,32 +235,49 @@ def create_inode(f, sbdict, type):
     inode_map = parse_inode_map(f, sbdict)
 
 
-def listdir(f, directory):
+def listdir(f, sbdict, path):
     '''
-    This function lists all the directories and files in the root directory.
+    This function lists all the directories and files in the directory
+    specified by path.
 
     Input:
         diskimg (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
+        path (str): The path of the directory.
+
+    Side effects:
+        The contents of the directory are printed to the console.
     '''
-
-    # The first data block (root) can be found at first_data_zone.
-    f.seek(BLOCK_SIZE * directory, 0)
-    root_data = f.read(BLOCK_SIZE)
-
-    if sbdict["magic"] == 0x137F:
-        name_len = 14
+    if path == '/':
+        inode_num = 0
     else:
-        name_len = 30
+        inode_num = find_inode(f, sbdict, path)
+    if inode_num == -1:
+        sys.stderr.buffer.write(
+            (f"Error: directory {path} not found").encode())
+        return
 
-    # Iterate over root_data and print each directory name.
-    for i in range(2, len(root_data), name_len + 2):
-        (name,) = struct.unpack(
-            "<" + str(name_len) + "s", root_data[i: i + name_len])
-        printname = name.rstrip(b"\0")
-        if len(printname) != 0:
-            sys.stdout.buffer.write(printname)
-            sys.stdout.buffer.write(b"\n")
+    inode = parse_inode(f, sbdict, inode_num)
+    if int(inode['mode'], 8) < 0o40000 or int(inode['mode'], 8) > 0o40777:
+        sys.stderr.buffer.write((f"Error: {path} is not a directory").encode())
+        return
+
+    for i in range(7):
+        f.seek(BLOCK_SIZE * inode[f"zone{i}"], 0)
+        root_data = f.read(BLOCK_SIZE)
+
+        if sbdict["magic"] == 0x137F:
+            name_len = 14
+        else:
+            name_len = 30
+
+        for i in range(2, len(root_data), name_len + 2):
+            (name,) = struct.unpack(
+                "<" + str(name_len) + "s", root_data[i: i + name_len])
+            printname = name.rstrip(b"\0")
+            if len(printname) != 0:
+                sys.stdout.buffer.write(printname)
+                sys.stdout.buffer.write(b"\n")
 
 
 def catfile(f, sbdict, path):
@@ -273,7 +291,8 @@ def catfile(f, sbdict, path):
     '''
     inode_num = find_inode(f, sbdict, path)
     if inode_num == -1:
-        print(f"The file {path} does not exist")
+        sys.stderr.buffer.write(
+            (f"Error: the file {path} does not exist").encode())
         sys.exit(0)
 
     inode = parse_inode(f, sbdict, inode_num)
@@ -284,7 +303,8 @@ def catfile(f, sbdict, path):
             f.seek(BLOCK_SIZE * inode[f"zone{i}"], 0)
             sys.stdout.buffer.write(f.read(BLOCK_SIZE).rstrip(b"\0"))
     else:
-        print(f"{path} is not a file or is not readable")
+        sys.stderr.buffer.write(
+            (f"Error: {path} is not a file or is not readable").encode())
         sys.exit(0)
 
 
@@ -329,19 +349,10 @@ if __name__ == "__main__":
         sbdict = parse_superblock(sbdata)
 
         if cmd == 'ls':
-            inode_num = 0
             if len(sys.argv) > 3:
-                inode_num = find_inode(f, sbdict, path)
-                if inode_num == -1:
-                    print(f"The directory {path} does not exist")
-                    sys.exit(0)
-            inode = parse_inode(f, sbdict, inode_num)
-            if 0o40000 <= int(inode['mode'], 8) <= 0o42000:
-                for i in range(7):
-                    listdir(f, inode['zone' + str(i)])
+                listdir(f, sbdict, path)
             else:
-                print(f"{path} is not a directory")
-                sys.exit(0)
+                listdir(f, sbdict, "/")
         elif cmd == 'cat':
             if (len(sys.argv) < 4):
                 print("Usage: mfstool.py image cat file")
