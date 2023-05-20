@@ -133,13 +133,18 @@ def parse_inode_map(f, sbdict):
         sbdict (dict): The dictionary with all the data from the superblock.
 
     Returns:
-        inode_map_dict (dict): The dictionary with all the data from the inode
-            map.
+        inode_map (list): The list with the bytes from the inode map.
     '''
     f.seek(BLOCK_SIZE * 2, 0)
     inode_map_data = f.read(
         math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) * BLOCK_SIZE)
-    pass
+    inode_bits = ''.join(f'{byte:08b}' for byte in inode_map_data)
+
+    inode_map = []
+    for i in range(0, len(inode_bits), 8):
+        inode_map.append(inode_bits[i:i + 8])
+
+    return inode_map
 
 
 def find_inode(f, sbdict, path):
@@ -216,9 +221,10 @@ def create_inode(f, sbdict, type):
         return -1
     inode = {}
     inode['mode'] = 0o100664 if type == 'f' else 0o40775
+    inode['mode'] = oct(inode['mode'])
     inode['uid'] = 0
     inode['size'] = 0
-    inode['mtime'] = int(time.time())
+    inode['mtime'] = time.time()
     inode['gid'] = 0
     inode['nlinks'] = 1
     inode['zone0'] = 0
@@ -233,6 +239,25 @@ def create_inode(f, sbdict, type):
 
     # Find the first free inode using the inode map.
     inode_map = parse_inode_map(f, sbdict)
+    idx = 0
+    while inode_map[idx] == '11111111':
+        idx += 1
+    current_bit = inode_map[idx][::-1].index('0')
+    inode_num = idx * 8 + current_bit - 1
+
+    # Update the inode map and add the inode to the inode table.
+    inode_map[idx] = inode_map[idx][:7 - current_bit] + '1' + \
+        inode_map[idx][7 - current_bit + 1:]
+    f.seek(BLOCK_SIZE * 2 + idx * 8, 0)
+    f.write(bytes([int(inode_map[idx], 2)]))
+    f.seek(BLOCK_SIZE * 2 + sbdict['ninodes'] * 32 + inode_num * 32, 0)
+    for key in inode:
+        if key == 'mode':
+            f.write(struct.pack("<H", int(inode[key], 8)))
+        else:
+            f.write(struct.pack("<I", int(inode[key])))
+
+    return inode_num
 
 
 def listdir(f, sbdict, path):
@@ -324,8 +349,6 @@ def touchfile(f, sbdict, path):
     if find_inode(f, sbdict, path) != -1:
         return
 
-    # TO DO: create a new inode that has not been used yet, use the inode map
-    # to find a free inode.
     inode_num = create_inode(f, sbdict, 'f')
     # TO DO: add a directory entry to the directory in the path. If the
     # directory does not exist -> error. Later we will implement mkdir, which can
@@ -347,7 +370,7 @@ if __name__ == "__main__":
         sbdata = f.read(BLOCK_SIZE)
 
         sbdict = parse_superblock(sbdata)
-
+        print(sbdict)
         if cmd == 'ls':
             if len(sys.argv) > 3:
                 listdir(f, sbdict, path)
