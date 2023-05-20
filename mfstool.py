@@ -4,7 +4,8 @@ UvAnetID: 14259338
 Bachelor informatica
 
 mfstool.py:
-    DESCRIPTION HERE
+    This file contains functions that can be used to read the data from a
+    minix file system disk image.
 '''
 
 import sys
@@ -121,39 +122,29 @@ def parse_inode(f, sbdict, num):
     return inode_dict
 
 
-def listdir(f, directory):
+def parse_inode_map(f, sbdict):
     '''
-    This function lists all the directories and files in the root directory.
+    This function finds the inode map and returns all of its data in a
+    dictionary.
 
     Input:
-        diskimg (file): The file of the disk image.
+        f (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
+
+    Returns:
+        inode_map_dict (dict): The dictionary with all the data from the inode
+            map.
     '''
-
-    # The first data block (root) can be found at first_data_zone.
-    f.seek(BLOCK_SIZE * directory, 0)
-    root_data = f.read(BLOCK_SIZE)
-
-    if sbdict["magic"] == 0x137F:
-        name_len = 14
-    else:
-        name_len = 30
-
-    # Iterate over root_data and print each directory name.
-    for i in range(2, len(root_data), name_len + 2):
-        (name,) = struct.unpack(
-            "<" + str(name_len) + "s", root_data[i: i + name_len])
-        printname = name.rstrip(b"\0")
-        if len(printname) != 0:
-            sys.stdout.buffer.write(printname)
-            sys.stdout.buffer.write(b"\n")
+    f.seek(BLOCK_SIZE * 2, 0)
+    inode_map_data = f.read(
+        math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) * BLOCK_SIZE)
+    pass
 
 
-def find_inode(f, path, sbdict):
+def find_inode(f, sbdict, path):
     '''
-    This function finds the inode number of the file specified by path. The
-    function returns -1 if the file was not found or if the given path does
-    not point to a file.
+    This function finds the inode number of the file or directory specified by
+    path. This function returns -1 when the file or directory was not found.
 
     Input:
         f (file): The file of the disk image.
@@ -161,7 +152,7 @@ def find_inode(f, path, sbdict):
         sbdict (dict): The dictionary with all the data from the superblock.
 
     Returns:
-        inode_num (int): The inode number of the file.
+        inode_num (int): The inode number of the file (index starts at 0).
     '''
     # Parse the path name and encode it.
     path = path.split('/')
@@ -194,10 +185,7 @@ def find_inode(f, path, sbdict):
                 dirswitch = True
                 break
             elif name_str == path[0]:
-                inode = parse_inode(f, sbdict, inode_num - 1)
-                if 0o100000 <= int(inode['mode'], 8) <= 0o120000:
-                    return inode_num - 1
-                return -1
+                return inode_num - 1
 
         if dirswitch:
             i = 0
@@ -205,6 +193,73 @@ def find_inode(f, path, sbdict):
             i += 1
 
     return -1
+
+
+def create_inode(f, sbdict, type):
+    '''
+    This function creates a new inode and returns the inode number.
+
+    Input:
+        f (file): The file of the disk image.
+        sbdict (dict): The dictionary with all the data from the superblock.
+        type (str): The type of the inode (f for file or d for directory).
+
+    Side effects:
+        The inode map is updated and the inode table is updated.
+
+    Returns:
+        inode_num (int): The inode number of the new inode (index starts at 0).
+    '''
+    if type != 'f' and type != 'd':
+        print("Error: invalid type")
+        return -1
+    inode = {}
+    inode['mode'] = 0o100664 if type == 'f' else 0o40775
+    inode['uid'] = 0
+    inode['size'] = 0
+    inode['mtime'] = int(time.time())
+    inode['gid'] = 0
+    inode['nlinks'] = 1
+    inode['zone0'] = 0
+    inode['zone1'] = 0
+    inode['zone2'] = 0
+    inode['zone3'] = 0
+    inode['zone4'] = 0
+    inode['zone5'] = 0
+    inode['zone6'] = 0
+    inode['indirect'] = 0
+    inode['double'] = 0
+
+    # Find the first free inode using the inode map.
+    inode_map = parse_inode_map(f, sbdict)
+
+
+def listdir(f, directory):
+    '''
+    This function lists all the directories and files in the root directory.
+
+    Input:
+        diskimg (file): The file of the disk image.
+        sbdict (dict): The dictionary with all the data from the superblock.
+    '''
+
+    # The first data block (root) can be found at first_data_zone.
+    f.seek(BLOCK_SIZE * directory, 0)
+    root_data = f.read(BLOCK_SIZE)
+
+    if sbdict["magic"] == 0x137F:
+        name_len = 14
+    else:
+        name_len = 30
+
+    # Iterate over root_data and print each directory name.
+    for i in range(2, len(root_data), name_len + 2):
+        (name,) = struct.unpack(
+            "<" + str(name_len) + "s", root_data[i: i + name_len])
+        printname = name.rstrip(b"\0")
+        if len(printname) != 0:
+            sys.stdout.buffer.write(printname)
+            sys.stdout.buffer.write(b"\n")
 
 
 def catfile(f, sbdict, path):
@@ -216,16 +271,45 @@ def catfile(f, sbdict, path):
         sbdict (dict): The dictionary with all the data from the superblock.
         path (str): The path of the file.
     '''
-    inode_num = find_inode(f, path, sbdict)
+    inode_num = find_inode(f, sbdict, path)
     if inode_num == -1:
         print(f"The file {path} does not exist")
         sys.exit(0)
+
     inode = parse_inode(f, sbdict, inode_num)
-    for i in range(7):
-        if inode[f"zone{i}"] == 0:
-            break
-        f.seek(BLOCK_SIZE * inode[f"zone{i}"], 0)
-        sys.stdout.buffer.write(f.read(BLOCK_SIZE).rstrip(b"\0"))
+    if 0o100444 <= int(inode['mode'], 8) <= 0o120000:
+        for i in range(7):
+            if inode[f"zone{i}"] == 0:
+                break
+            f.seek(BLOCK_SIZE * inode[f"zone{i}"], 0)
+            sys.stdout.buffer.write(f.read(BLOCK_SIZE).rstrip(b"\0"))
+    else:
+        print(f"{path} is not a file or is not readable")
+        sys.exit(0)
+
+
+def touchfile(f, sbdict, path):
+    '''
+    This function creates a new file at the specified path. If the file already
+    exists, nothing happens.
+
+    Input:
+        f (file): The file of the disk image.
+        sbdict (dict): The dictionary with all the data from the superblock.
+        path (str): The path of the file.
+
+    Side effects:
+        Creates a new file at the specified path in the disk image.
+    '''
+    if find_inode(f, sbdict, path) != -1:
+        return
+
+    # TO DO: create a new inode that has not been used yet, use the inode map
+    # to find a free inode.
+    inode_num = create_inode(f, sbdict, 'f')
+    # TO DO: add a directory entry to the directory in the path. If the
+    # directory does not exist -> error. Later we will implement mkdir, which can
+    # then be used to create a new dir.
 
 
 if __name__ == "__main__":
@@ -235,17 +319,15 @@ if __name__ == "__main__":
 
     diskimg = sys.argv[1]
     cmd = sys.argv[2]
-    if cmd == 'cat':
+    if cmd == 'cat' or cmd == 'touch':
         if len(sys.argv) >= 3:
-            filepath = sys.argv[3]
+            path = sys.argv[3]
         else:
-            print("Usage: mfstool.py image cat filepath")
+            print("Error: no path specified")
             sys.exit(0)
 
     with open(diskimg, "rb") as f:
-        # Skip boot block
         f.seek(BLOCK_SIZE, 0)
-        # Read super block
         sbdata = f.read(BLOCK_SIZE)
 
         sbdict = parse_superblock(sbdata)
@@ -255,4 +337,6 @@ if __name__ == "__main__":
             for i in range(7):
                 listdir(f, inode['zone' + str(i)])
         elif cmd == 'cat':
-            catfile(f, sbdict, filepath)
+            catfile(f, sbdict, path)
+        elif cmd == 'touch':
+            touchfile(f, sbdict, path)
