@@ -319,12 +319,8 @@ if __name__ == "__main__":
 
     diskimg = sys.argv[1]
     cmd = sys.argv[2]
-    if cmd == 'cat' or cmd == 'touch':
-        if len(sys.argv) >= 3:
-            path = sys.argv[3]
-        else:
-            print("Error: no path specified")
-            sys.exit(0)
+    if len(sys.argv) > 3:
+        path = sys.argv[3]
 
     with open(diskimg, "rb") as f:
         f.seek(BLOCK_SIZE, 0)
@@ -333,10 +329,26 @@ if __name__ == "__main__":
         sbdict = parse_superblock(sbdata)
 
         if cmd == 'ls':
-            inode = parse_inode(f, sbdict, 0)
-            for i in range(7):
-                listdir(f, inode['zone' + str(i)])
+            inode_num = 0
+            if len(sys.argv) > 3:
+                inode_num = find_inode(f, sbdict, path)
+                if inode_num == -1:
+                    print(f"The directory {path} does not exist")
+                    sys.exit(0)
+            inode = parse_inode(f, sbdict, inode_num)
+            if 0o40000 <= int(inode['mode'], 8) <= 0o42000:
+                for i in range(7):
+                    listdir(f, inode['zone' + str(i)])
+            else:
+                print(f"{path} is not a directory")
+                sys.exit(0)
         elif cmd == 'cat':
+            if (len(sys.argv) < 4):
+                print("Usage: mfstool.py image cat file")
+                sys.exit(0)
             catfile(f, sbdict, path)
         elif cmd == 'touch':
+            if (len(sys.argv) < 4):
+                print("Usage: mfstool.py image touch file")
+                sys.exit(0)
             touchfile(f, sbdict, path)
