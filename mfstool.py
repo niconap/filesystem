@@ -165,7 +165,6 @@ def find_inode(f, path, sbdict):
     '''
     # Parse the path name and encode it.
     path = path.split('/')
-    filename = path.pop()
     root_inode = parse_inode(f, sbdict, 0)
 
     if sbdict["magic"] == 0x137F:
@@ -174,15 +173,12 @@ def find_inode(f, path, sbdict):
         name_len = 30
 
     i = 0
-
-    # This variable is used to check whether we need to switch the directory.
-    dirswitch = False
-
     while True:
         if root_inode[f"zone{i}"] == 0:
             break
         f.seek(BLOCK_SIZE * root_inode[f"zone{i}"], 0)
         root_data = f.read(BLOCK_SIZE)
+        dirswitch = False
 
         # Iterate over each dir entry to find the next dir or file.
         for j in range(2, len(root_data), name_len + 2):
@@ -192,12 +188,12 @@ def find_inode(f, path, sbdict):
 
             name_str = name.rstrip(b"\0").decode()
 
-            if len(path) > 0 and name_str == path[0]:
+            if len(path) > 1 and name_str == path[0]:
                 root_inode = parse_inode(f, sbdict, inode_num - 1)
                 path.pop(0)
                 dirswitch = True
                 break
-            elif name_str == filename:
+            elif name_str == path[0]:
                 inode = parse_inode(f, sbdict, inode_num - 1)
                 if 0o100000 <= int(inode['mode'], 8) <= 0o120000:
                     return inode_num - 1
@@ -205,8 +201,6 @@ def find_inode(f, path, sbdict):
 
         if dirswitch:
             i = 0
-            dirswitch = False
-            continue
         else:
             i += 1
 
@@ -223,8 +217,15 @@ def catfile(f, sbdict, path):
         path (str): The path of the file.
     '''
     inode_num = find_inode(f, path, sbdict)
+    if inode_num == -1:
+        print(f"The file {path} does not exist")
+        sys.exit(0)
     inode = parse_inode(f, sbdict, inode_num)
-    print(inode_num)
+    for i in range(7):
+        if inode[f"zone{i}"] == 0:
+            break
+        f.seek(BLOCK_SIZE * inode[f"zone{i}"], 0)
+        sys.stdout.buffer.write(f.read(BLOCK_SIZE).rstrip(b"\0"))
 
 
 if __name__ == "__main__":
