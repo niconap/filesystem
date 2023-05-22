@@ -360,7 +360,26 @@ def touchfile(f, sbdict, filename):
         return
 
     inode_num = create_inode(f, sbdict, 'f')
-    # TO DO: add a directory entry to the root directory.
+    # TO DO: add a directory entry to the root directory. This directory is
+    # one block in size and there is enough space for the new entry.
+    entry = {
+        'inode': inode_num + 1,
+        'name': filename
+    }
+    # Add padding to the filename to fill the entire name_len.
+    entry['name'] = entry['name'].ljust(name_len, '\0')
+
+    # Loop over all the entries in the root directory first block
+    root_inode = parse_inode(f, sbdict, 0)
+    f.seek(BLOCK_SIZE * root_inode['zone0'], 0)
+    root_data = f.read(BLOCK_SIZE)
+    for i in range(0, len(root_data), name_len + 2):
+        # If the next 16 bytes are all 0, the entry is empty.
+        if root_data[i:i + name_len + 2] == b'\0' * (name_len + 2):
+            f.seek(BLOCK_SIZE * root_inode['zone0'] + i, 0)
+            f.write(struct.pack("<H", entry['inode']))
+            f.write(entry['name'].encode())
+            return
 
 
 if __name__ == "__main__":
