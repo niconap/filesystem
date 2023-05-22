@@ -160,8 +160,12 @@ def find_inode(f, sbdict, path):
     Returns:
         inode_num (int): The inode number of the file (index starts at 0).
     '''
-    # Parse the path name and encode it.
+    if not sbdict or not f:
+        return -1
+
     path = path.split('/')
+    if path[0] == '':
+        return 0
     root_inode = parse_inode(f, sbdict, 0)
 
     if sbdict["magic"] == 0x137F:
@@ -219,23 +223,21 @@ def create_inode(f, sbdict, type):
     if type != 'f' and type != 'd':
         sys.stderr.buffer.write(("Error: invalid type").encode())
         return -1
-    inode = {}
-    inode['mode'] = 0o100664 if type == 'f' else 0o40775
-    inode['mode'] = oct(inode['mode'])
-    inode['uid'] = 0
-    inode['size'] = 0
-    inode['mtime'] = time.time()
-    inode['gid'] = 0
-    inode['nlinks'] = 1
-    inode['zone0'] = 0
-    inode['zone1'] = 0
-    inode['zone2'] = 0
-    inode['zone3'] = 0
-    inode['zone4'] = 0
-    inode['zone5'] = 0
-    inode['zone6'] = 0
-    inode['indirect'] = 0
-    inode['double'] = 0
+    mode = 0o100664 if type == 'f' else 0o40775
+    uid = 0
+    size = 0
+    mtime = int(time.time())
+    gid = 0
+    nlinks = 1
+    zone0 = 0
+    zone1 = 0
+    zone2 = 0
+    zone3 = 0
+    zone4 = 0
+    zone5 = 0
+    zone6 = 0
+    indirect = 0
+    double = 0
 
     # Find the first free inode using the inode map.
     inode_map = parse_inode_map(f, sbdict)
@@ -248,14 +250,21 @@ def create_inode(f, sbdict, type):
     # Update the inode map and add the inode to the inode table.
     inode_map[idx] = inode_map[idx][:7 - current_bit] + '1' + \
         inode_map[idx][7 - current_bit + 1:]
-    f.seek(BLOCK_SIZE * 2 + idx * 8, 0)
+
+    # Write the updated data to the inode map.
+    f.seek(BLOCK_SIZE * 2 + idx, 0)
     f.write(bytes([int(inode_map[idx], 2)]))
-    f.seek(BLOCK_SIZE * 2 + sbdict['ninodes'] * 32 + inode_num * 32, 0)
-    for key in inode:
-        if key == 'mode':
-            f.write(struct.pack("<H", int(inode[key], 8)))
-        else:
-            f.write(struct.pack("<I", int(inode[key])))
+
+    # Write the new inode to the inode table.
+    inode_table_offset = BLOCK_SIZE * 2 + \
+        (math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
+        (math.ceil(sbdict['nzones'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
+        inode_num * INODE_SIZE
+    f.seek(inode_table_offset, 0)
+    data = struct.pack("<HHLLBBHHHHHHHHH", mode, uid, size, mtime, gid, nlinks,
+                       zone0, zone1, zone2, zone3, zone4, zone5, zone6,
+                       indirect, double)
+    f.write(data)
 
     return inode_num
 
@@ -273,10 +282,7 @@ def listdir(f, sbdict, path):
     Side effects:
         The contents of the directory are printed to the console.
     '''
-    if path == '/':
-        inode_num = 0
-    else:
-        inode_num = find_inode(f, sbdict, path)
+    inode_num = find_inode(f, sbdict, path)
     if inode_num == -1:
         sys.stderr.buffer.write(
             (f"Error: directory {path} not found").encode())
@@ -333,26 +339,38 @@ def catfile(f, sbdict, path):
         sys.exit(0)
 
 
-def touchfile(f, sbdict, path):
+def touchfile(f, sbdict, filename):
     '''
-    This function creates a new file at the specified path. If the file already
-    exists, nothing happens.
+    This function creates a new file at the specified filename. If the file
+    already exists, nothing happens.
 
     Input:
         f (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
-        path (str): The path of the file.
+        filename (str): The name of the file.
 
     Side effects:
-        Creates a new file at the specified path in the disk image.
+        Creates a new file at the specified filename in the disk image.
     '''
-    if find_inode(f, sbdict, path) != -1:
+    if filename.find('/') != -1:
+        sys.stderr.buffer.write(
+            ("Error: files can only be created in root").encode())
+        return
+    if find_inode(f, sbdict, filename) != -1:
+        return
+
+    if sbdict["magic"] == 0x137F:
+        name_len = 14
+    else:
+        name_len = 30
+
+    if (len(filename) > name_len):
+        sys.stderr.buffer.write(
+            (f"Error: filename too long, max {name_len} characters").encode())
         return
 
     inode_num = create_inode(f, sbdict, 'f')
-    # TO DO: add a directory entry to the directory in the path. If the
-    # directory does not exist -> error. Later we will implement mkdir, which can
-    # then be used to create a new dir.
+    # TO DO: add a directory entry to the root directory.
 
 
 if __name__ == "__main__":
@@ -365,12 +383,12 @@ if __name__ == "__main__":
     if len(sys.argv) > 3:
         path = sys.argv[3]
 
-    with open(diskimg, "rb") as f:
+    with open(diskimg, "r+b") as f:
         f.seek(BLOCK_SIZE, 0)
         sbdata = f.read(BLOCK_SIZE)
 
         sbdict = parse_superblock(sbdata)
-        print(sbdict)
+
         if cmd == 'ls':
             if len(sys.argv) > 3:
                 listdir(f, sbdict, path)
@@ -386,3 +404,5 @@ if __name__ == "__main__":
                 print("Usage: mfstool.py image touch file")
                 sys.exit(0)
             touchfile(f, sbdict, path)
+
+    f.close()
