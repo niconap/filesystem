@@ -223,27 +223,15 @@ def create_inode(f, sbdict, type):
     if type != 'f' and type != 'd':
         sys.stderr.buffer.write(("Error: invalid type").encode())
         return -1
-    mode = 0o100664 if type == 'f' else 0o40775
-    uid = 0
-    size = 0
-    mtime = int(time.time())
-    gid = 0
-    nlinks = 1
-    zone0 = 0
-    zone1 = 0
-    zone2 = 0
-    zone3 = 0
-    zone4 = 0
-    zone5 = 0
-    zone6 = 0
-    indirect = 0
-    double = 0
 
     # Find the first free inode using the inode map.
     inode_map = parse_inode_map(f, sbdict)
     idx = 0
     while inode_map[idx] == '11111111':
         idx += 1
+        if idx > len(inode_map):
+            sys.stderr.buffer.write(("Error: no free inodes").encode())
+            sys.exit(0)
     current_bit = inode_map[idx][::-1].index('0')
     inode_num = idx * 8 + current_bit - 1
 
@@ -261,9 +249,11 @@ def create_inode(f, sbdict, type):
         (math.ceil(sbdict['nzones'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
         inode_num * INODE_SIZE
     f.seek(inode_table_offset, 0)
-    data = struct.pack("<HHLLBBHHHHHHHHH", mode, uid, size, mtime, gid, nlinks,
-                       zone0, zone1, zone2, zone3, zone4, zone5, zone6,
-                       indirect, double)
+    mode = 0o100664 if type == 'f' else 0o40775
+    mtime = int(time.time())
+    data = struct.pack("<HHLLBBHHHHHHHHH", mode, 0, 0, mtime, 0, 0,
+                       0, 0, 0, 0, 0, 0, 0,
+                       0, 0)
     f.write(data)
 
     return inode_num
