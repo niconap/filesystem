@@ -251,7 +251,7 @@ def create_inode(f, sbdict, type):
     f.seek(inode_table_offset, 0)
     mode = 0o100664 if type == 'f' else 0o40775
     mtime = int(time.time())
-    data = struct.pack("<HHLLBBHHHHHHHHH", mode, 0, 0, mtime, 0, 0,
+    data = struct.pack("<HHLLBBHHHHHHHHH", mode, 0, 0, mtime, 0, 1,
                        0, 0, 0, 0, 0, 0, 0,
                        0, 0)
     f.write(data)
@@ -360,8 +360,6 @@ def touchfile(f, sbdict, filename):
         return
 
     inode_num = create_inode(f, sbdict, 'f')
-    # TO DO: add a directory entry to the root directory. This directory is
-    # one block in size and there is enough space for the new entry.
     entry = {
         'inode': inode_num + 1,
         'name': filename
@@ -374,11 +372,16 @@ def touchfile(f, sbdict, filename):
     f.seek(BLOCK_SIZE * root_inode['zone0'], 0)
     root_data = f.read(BLOCK_SIZE)
     for i in range(0, len(root_data), name_len + 2):
-        # If the next 16 bytes are all 0, the entry is empty.
+        # If the next bytes are all 0, the entry is empty.
         if root_data[i:i + name_len + 2] == b'\0' * (name_len + 2):
             f.seek(BLOCK_SIZE * root_inode['zone0'] + i, 0)
             f.write(struct.pack("<H", entry['inode']))
             f.write(entry['name'].encode())
+            # Update the size of the root directory.
+            root_inode['size'] += name_len + 2
+            f.seek(BLOCK_SIZE *
+                   (2 + sbdict['imap_blocks'] + sbdict['zmap_blocks']) + 4, 0)
+            f.write(struct.pack("<L", root_inode['size']))
             return
 
 
