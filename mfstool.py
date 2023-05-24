@@ -2,7 +2,6 @@
 Name: Nico Nap
 UvAnetID: 14259338
 Bachelor informatica
-
 mfstool.py:
     This file contains functions that can be used to read the data from a
     minix file system disk image.
@@ -21,10 +20,8 @@ def parse_superblock(sbdata):
     '''
     This function takes all the data from the superblock and puts it in the
     dictionary.
-
     Input:
         sbdata (bytes): The data from the superblock.
-
     Returns:
         sbdict (dict): The dictionary with all the data from the superblock.
     '''
@@ -57,12 +54,10 @@ def parse_superblock(sbdata):
 def parse_inode(f, sbdict, num):
     '''
     This function finds an inode and returns all of its data in a dictionary.
-
     Input:
         f (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
         num (int): The number of the inode.
-
     Returns:
         inode_dict (dict): The dictionary with all the data from the inode.
     '''
@@ -127,11 +122,9 @@ def parse_inode_map(f, sbdict):
     '''
     This function finds the inode map and returns all of its data in a
     dictionary.
-
     Input:
         f (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
-
     Returns:
         inode_map (list): The list with the bytes from the inode map.
     '''
@@ -151,12 +144,10 @@ def find_inode(f, sbdict, path):
     '''
     This function finds the inode number of the file or directory specified by
     path. This function returns -1 when the file or directory was not found.
-
     Input:
         f (file): The file of the disk image.
         path (str): The path of the file.
         sbdict (dict): The dictionary with all the data from the superblock.
-
     Returns:
         inode_num (int): The inode number of the file (index starts at 0).
     '''
@@ -208,15 +199,12 @@ def find_inode(f, sbdict, path):
 def create_inode(f, sbdict, type):
     '''
     This function creates a new inode and returns the inode number.
-
     Input:
         f (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
         type (str): The type of the inode (f for file or d for directory).
-
     Side effects:
         The inode map is updated and the inode table is updated.
-
     Returns:
         inode_num (int): The inode number of the new inode (index starts at 0).
     '''
@@ -238,17 +226,22 @@ def create_inode(f, sbdict, type):
     # Update the inode map and add the inode to the inode table.
     inode_map[idx] = inode_map[idx][:7 - current_bit] + '1' + \
         inode_map[idx][7 - current_bit + 1:]
+
+    # Write the updated data to the inode map.
     f.seek(BLOCK_SIZE * 2 + idx, 0)
     f.write(bytes([int(inode_map[idx], 2)]))
 
+    # Write the new inode to the inode table.
+    inode_table_offset = BLOCK_SIZE * 2 + \
+        (math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
+        (math.ceil(sbdict['nzones'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
+        inode_num * INODE_SIZE
+    f.seek(inode_table_offset, 0)
     mode = 0o100664 if type == 'f' else 0o40775
     mtime = int(time.time())
     data = struct.pack("<HHLLBBHHHHHHHHH", mode, 0, 0, mtime, 0, 1,
                        0, 0, 0, 0, 0, 0, 0,
                        0, 0)
-    f.seek(BLOCK_SIZE *
-           (2 + sbdict['imap_blocks'] + sbdict['zmap_blocks']) +
-           inode_num * INODE_SIZE, 0)
     f.write(data)
 
     return inode_num
@@ -258,12 +251,10 @@ def listdir(f, sbdict, path):
     '''
     This function lists all the directories and files in the directory
     specified by path.
-
     Input:
         diskimg (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
         path (str): The path of the directory.
-
     Side effects:
         The contents of the directory are printed to the console.
     '''
@@ -299,7 +290,6 @@ def listdir(f, sbdict, path):
 def catfile(f, sbdict, path):
     '''
     This function prints the contents of the file specified by path.
-
     Input:
         f (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
@@ -326,14 +316,12 @@ def catfile(f, sbdict, path):
 
 def touchfile(f, sbdict, filename):
     '''
-    This function creates a new file with the specified filename in the root
-    directory. If the file already exists, nothing happens.
-
+    This function creates a new file at the specified filename. If the file
+    already exists, nothing happens.
     Input:
         f (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
         filename (str): The name of the file.
-
     Side effects:
         Creates a new file at the specified filename in the disk image.
     '''
@@ -354,21 +342,26 @@ def touchfile(f, sbdict, filename):
             (f"Error: filename too long, max {name_len} characters").encode())
         return
 
-    # Add the directory entry of the new file to the root directory and update
-    # its size.
     inode_num = create_inode(f, sbdict, 'f')
+    entry = {
+        'inode': inode_num + 1,
+        'name': filename
+    }
+    # Add padding to the filename to fill the entire name_len.
+    entry['name'] = entry['name'].ljust(name_len, '\0')
+
+    # Loop over all the entries in the root directory first block
     root_inode = parse_inode(f, sbdict, 0)
-    entry_size = name_len + 2
     f.seek(BLOCK_SIZE * root_inode['zone0'], 0)
     root_data = f.read(BLOCK_SIZE)
-
-    for i in range(0, len(root_data), entry_size):
+    for i in range(0, len(root_data), name_len + 2):
         # If the next bytes are all 0, the entry is empty.
-        if root_data[i:i + entry_size] == b'\0' * (entry_size):
+        if root_data[i:i + name_len + 2] == b'\0' * (name_len + 2):
             f.seek(BLOCK_SIZE * root_inode['zone0'] + i, 0)
-            f.write(struct.pack("<H", inode_num))
-            f.write(filename.encode())
-            root_inode['size'] += entry_size
+            f.write(struct.pack("<H", entry['inode']))
+            f.write(entry['name'].encode())
+            # Update the size of the root directory.
+            root_inode['size'] += name_len + 2
             f.seek(BLOCK_SIZE *
                    (2 + sbdict['imap_blocks'] + sbdict['zmap_blocks']) + 4, 0)
             f.write(struct.pack("<L", root_inode['size']))
