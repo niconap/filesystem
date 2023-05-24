@@ -226,12 +226,8 @@ def create_inode(f, sbdict, type):
     # Update the inode map and add the inode to the inode table.
     inode_map[idx] = inode_map[idx][:7 - current_bit] + '1' + \
         inode_map[idx][7 - current_bit + 1:]
-
-    # Write the updated data to the inode map.
     f.seek(BLOCK_SIZE * 2 + idx, 0)
     f.write(bytes([int(inode_map[idx], 2)]))
-
-    # Write the new inode to the inode table.
     inode_table_offset = BLOCK_SIZE * 2 + \
         (math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
         (math.ceil(sbdict['nzones'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
@@ -245,6 +241,47 @@ def create_inode(f, sbdict, type):
     f.write(data)
 
     return inode_num
+
+
+def add_dir_entry(f, sbdict, name, inode_num):
+    '''
+    This function adds a new directory entry to the root directory with the
+    given name and inode number.
+
+    Input:
+        f (file): The file of the disk image.
+        sbdict (dict): The dictionary with all the data from the superblock.
+        name (str): The name of the new directory entry.
+        inode_num (int): The inode number of the new directory entry.
+
+    Side effects:
+        The root directory entries and the directory's size are updated.
+    '''
+    if sbdict["magic"] == 0x137F:
+        name_len = 14
+    else:
+        name_len = 30
+
+    if (len(name) > name_len):
+        sys.stderr.buffer.write(
+            (f"Error: filename too long, max {name_len} characters").encode())
+        return
+
+    root_inode = parse_inode(f, sbdict, 0)
+    f.seek(BLOCK_SIZE * root_inode['zone0'], 0)
+    root_data = f.read(BLOCK_SIZE)
+    for i in range(0, len(root_data), name_len + 2):
+        # If the next bytes are all 0, the entry is empty.
+        if root_data[i:i + name_len + 2] == b'\0' * (name_len + 2):
+            f.seek(BLOCK_SIZE * root_inode['zone0'] + i, 0)
+            f.write(struct.pack("<H", inode_num + 1))
+            f.write(name.encode())
+            # Update the size of the root directory.
+            root_inode['size'] += name_len + 2
+            f.seek(BLOCK_SIZE *
+                   (2 + sbdict['imap_blocks'] + sbdict['zmap_blocks']) + 4, 0)
+            f.write(struct.pack("<L", root_inode['size']))
+            return
 
 
 def listdir(f, sbdict, path):
@@ -343,29 +380,7 @@ def touchfile(f, sbdict, filename):
         return
 
     inode_num = create_inode(f, sbdict, 'f')
-    entry = {
-        'inode': inode_num + 1,
-        'name': filename
-    }
-    # Add padding to the filename to fill the entire name_len.
-    entry['name'] = entry['name'].ljust(name_len, '\0')
-
-    # Loop over all the entries in the root directory first block
-    root_inode = parse_inode(f, sbdict, 0)
-    f.seek(BLOCK_SIZE * root_inode['zone0'], 0)
-    root_data = f.read(BLOCK_SIZE)
-    for i in range(0, len(root_data), name_len + 2):
-        # If the next bytes are all 0, the entry is empty.
-        if root_data[i:i + name_len + 2] == b'\0' * (name_len + 2):
-            f.seek(BLOCK_SIZE * root_inode['zone0'] + i, 0)
-            f.write(struct.pack("<H", entry['inode']))
-            f.write(entry['name'].encode())
-            # Update the size of the root directory.
-            root_inode['size'] += name_len + 2
-            f.seek(BLOCK_SIZE *
-                   (2 + sbdict['imap_blocks'] + sbdict['zmap_blocks']) + 4, 0)
-            f.write(struct.pack("<L", root_inode['size']))
-            return
+    add_dir_entry(f, sbdict, filename, inode_num)
 
 
 if __name__ == "__main__":
