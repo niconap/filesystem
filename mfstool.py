@@ -378,8 +378,6 @@ if __name__ == "__main__":
         sbdata = f.read(BLOCK_SIZE)
 
         sbdict = parse_superblock(sbdata)
-        print(sbdict)
-        print(parse_inode(f, sbdict, 0))
 
         if sbdict["magic"] == 0x137F:
             NAME_LEN = 14
