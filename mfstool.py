@@ -5,7 +5,7 @@ Bachelor informatica
 
 mfstool.py:
     This file contains functions that can be used to read the data from a
-    minix file system disk image. The functions are ls, cat and touch.
+    minix file system disk image. The functions are ls, cat, touch and mkdir.
 '''
 
 import sys
@@ -252,6 +252,40 @@ def parse_zone_map(f, sbdict):
     return zone_map
 
 
+def allocate_zone(f, sbdict):
+    '''
+    This function finds a free zone, marks it and returns the zone number.
+
+    Input:
+        f (file): The file of the disk image.
+        sbdict (dict): The dictionary with all the data from the superblock.
+
+    Side effects:
+        The zone map is updated.
+
+    Returns:
+        zone_num (int): The zone number of the new zone.
+    '''
+    zone_map = parse_zone_map(f, sbdict)
+    idx = 0
+    while zone_map[idx] == '11111111':
+        idx += 1
+        if idx > len(zone_map):
+            sys.stderr.buffer.write(("Error: no free zones").encode())
+            sys.exit(0)
+    current_bit = zone_map[idx][::-1].index('0')
+    zone_num = idx * 8 + current_bit - 1 + sbdict['first_data']
+
+    # Update the zone map and the zone.
+    zone_map[idx] = zone_map[idx][:7 - current_bit] + '1' + \
+        zone_map[idx][7 - current_bit + 1:]
+    f.seek(BLOCK_SIZE
+           * (2 + math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) + idx))
+    f.write(bytes([int(zone_map[idx], 2)]))
+
+    return zone_num
+
+
 def add_dir_entry(f, sbdict, name, inode_num):
     '''
     This function adds a new directory entry to the root directory with the
@@ -389,40 +423,6 @@ def touchfile(f, sbdict, filename):
 
     inode_num = create_inode(f, sbdict, 'f')
     add_dir_entry(f, sbdict, filename, inode_num)
-
-
-def allocate_zone(f, sbdict):
-    '''
-    This function finds a free zone, marks it and returns the zone number.
-
-    Input:
-        f (file): The file of the disk image.
-        sbdict (dict): The dictionary with all the data from the superblock.
-
-    Side effects:
-        The zone map is updated.
-
-    Returns:
-        zone_num (int): The zone number of the new zone.
-    '''
-    zone_map = parse_zone_map(f, sbdict)
-    idx = 0
-    while zone_map[idx] == '11111111':
-        idx += 1
-        if idx > len(zone_map):
-            sys.stderr.buffer.write(("Error: no free zones").encode())
-            sys.exit(0)
-    current_bit = zone_map[idx][::-1].index('0')
-    zone_num = idx * 8 + current_bit - 1 + sbdict['first_data']
-
-    # Update the zone map and the zone.
-    zone_map[idx] = zone_map[idx][:7 - current_bit] + '1' + \
-        zone_map[idx][7 - current_bit + 1:]
-    f.seek(BLOCK_SIZE
-           * (2 + math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) + idx))
-    f.write(bytes([int(zone_map[idx], 2)]))
-
-    return zone_num
 
 
 def mkdir(f, sbdict, dirname):
