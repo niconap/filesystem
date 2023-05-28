@@ -2,9 +2,10 @@
 Name: Nico Nap
 UvAnetID: 14259338
 Bachelor informatica
+
 mfstool.py:
     This file contains functions that can be used to read the data from a
-    minix file system disk image.
+    minix file system disk image. The functions are ls, cat and touch.
 '''
 
 import sys
@@ -28,7 +29,6 @@ def parse_superblock(sbdata):
     Returns:
         sbdict (dict): The dictionary with all the data from the superblock.
     '''
-
     sbdict = {}
 
     fields = ["ninodes", "nzones", "imap_blocks", "zmap_blocks", "first_data",
@@ -66,7 +66,7 @@ def parse_inode(f, sbdict, num):
         (math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
         (math.ceil(sbdict['nzones'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
         num * INODE_SIZE
-    f.seek(inode_table_offset, 0)
+    f.seek(inode_table_offset)
     inode_table_data = f.read(BLOCK_SIZE)
     inode_dict = {}
 
@@ -99,16 +99,16 @@ def parse_inode(f, sbdict, num):
 def parse_inode_map(f, sbdict):
     '''
     This function finds the inode map and returns all of its data in a
-    dictionary.
+    list.
 
     Input:
         f (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
 
     Returns:
-        inode_map (list): The list with the bytes from the inode map.
+        inode_map (list): The list with the bytes as strings from the map.
     '''
-    f.seek(BLOCK_SIZE * 2, 0)
+    f.seek(BLOCK_SIZE * 2)
     inode_map_data = f.read(
         math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) * BLOCK_SIZE)
     inode_bits = ''.join(f'{byte:08b}' for byte in inode_map_data)
@@ -145,7 +145,7 @@ def find_inode(f, sbdict, path):
     while True:
         if root_inode[f"zone{i}"] == 0:
             break
-        f.seek(BLOCK_SIZE * root_inode[f"zone{i}"], 0)
+        f.seek(BLOCK_SIZE * root_inode[f"zone{i}"])
         root_data = f.read(BLOCK_SIZE)
         dirswitch = False
 
@@ -173,7 +173,7 @@ def find_inode(f, sbdict, path):
     return -1
 
 
-def create_inode(f, sbdict, type):
+def create_inode(f, sbdict, type, zone_num=0):
     '''
     This function creates a new inode and returns the inode number.
 
@@ -181,6 +181,7 @@ def create_inode(f, sbdict, type):
         f (file): The file of the disk image.
         sbdict (dict): The dictionary with all the data from the superblock.
         type (str): The type of the inode (f for file or d for directory).
+        zone_num (int): The zone first number of the inode (0 by default).
 
     Side effects:
         The inode map and the inode table are updated.
@@ -206,21 +207,49 @@ def create_inode(f, sbdict, type):
     # Update the inode map and add the inode to the inode table.
     inode_map[idx] = inode_map[idx][:7 - current_bit] + '1' + \
         inode_map[idx][7 - current_bit + 1:]
-    f.seek(BLOCK_SIZE * 2 + idx, 0)
+    f.seek(BLOCK_SIZE * 2 + idx)
     f.write(bytes([int(inode_map[idx], 2)]))
     inode_table_offset = BLOCK_SIZE * 2 + \
         (math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
         (math.ceil(sbdict['nzones'] / 8 / BLOCK_SIZE) * BLOCK_SIZE) + \
         inode_num * INODE_SIZE
-    f.seek(inode_table_offset, 0)
+    f.seek(inode_table_offset)
     mode = 0o100664 if type == 'f' else 0o40775
-    mtime = int(time.time())
-    data = struct.pack("<HHLLBBHHHHHHHHH", mode, 0, 0, mtime, 0, 1,
-                       0, 0, 0, 0, 0, 0, 0,
-                       0, 0)
+
+    # Since directories will always have 2 links, the size of a directory is
+    # always 2 * (NAME_LEN + 2).
+    size = 0 if type == 'f' else 2 * (NAME_LEN + 2)
+    n_links = 1 if type == 'f' else 2
+
+    data = struct.pack("<HHLLBBHHHHHHHHH", mode, 0, size, int(
+        time.time()), 0, n_links, zone_num, 0, 0, 0, 0, 0, 0, 0, 0)
     f.write(data)
 
     return inode_num
+
+
+def parse_zone_map(f, sbdict):
+    '''
+    This function finds the zone map and returns all of its data in a list.
+
+    Input:
+        f (file): The file of the disk image.
+        sbdict (dict): The dictionary with all the data from the superblock.
+
+    Returns:
+        zone_map (list): The list with the bytes as strings from the map.
+    '''
+    f.seek(BLOCK_SIZE
+           * (2 + (math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE))))
+    zone_map_data = f.read(
+        math.ceil(sbdict['nzones'] / 8 / BLOCK_SIZE) * BLOCK_SIZE)
+    zone_bits = ''.join(f'{byte:08b}' for byte in zone_map_data)
+
+    zone_map = []
+    for i in range(0, len(zone_bits), 8):
+        zone_map.append(zone_bits[i:i + 8])
+
+    return zone_map
 
 
 def add_dir_entry(f, sbdict, name, inode_num):
@@ -237,25 +266,24 @@ def add_dir_entry(f, sbdict, name, inode_num):
     Side effects:
         The root directory entries and the directory's size are updated.
     '''
-
     if (len(name) > NAME_LEN):
         sys.stderr.buffer.write(
             (f"Error: filename too long, max {NAME_LEN} characters").encode())
         return
 
     root_inode = parse_inode(f, sbdict, 0)
-    f.seek(BLOCK_SIZE * root_inode['zone0'], 0)
+    f.seek(BLOCK_SIZE * root_inode['zone0'])
     root_data = f.read(BLOCK_SIZE)
     for i in range(0, len(root_data), NAME_LEN + 2):
         # If the next bytes are all 0, the entry is empty.
         if root_data[i:i + NAME_LEN + 2] == b'\0' * (NAME_LEN + 2):
-            f.seek(BLOCK_SIZE * root_inode['zone0'] + i, 0)
+            f.seek(BLOCK_SIZE * root_inode['zone0'] + i)
             f.write(struct.pack("<H", inode_num + 1))
             f.write(name.encode())
             # Update the size of the root directory.
             root_inode['size'] += NAME_LEN + 2
-            f.seek(BLOCK_SIZE *
-                   (2 + sbdict['imap_blocks'] + sbdict['zmap_blocks']) + 4, 0)
+            f.seek(BLOCK_SIZE
+                   * (2 + sbdict['imap_blocks'] + sbdict['zmap_blocks']) + 4)
             f.write(struct.pack("<L", root_inode['size']))
             return
 
@@ -285,7 +313,7 @@ def listdir(f, sbdict, path):
         return
 
     for i in range(7):
-        f.seek(BLOCK_SIZE * inode[f"zone{i}"], 0)
+        f.seek(BLOCK_SIZE * inode[f"zone{i}"])
         root_data = f.read(BLOCK_SIZE)
 
         if sbdict["magic"] == 0x137F:
@@ -325,7 +353,7 @@ def catfile(f, sbdict, path):
         for i in range(7):
             if inode[f"zone{i}"] == 0:
                 break
-            f.seek(BLOCK_SIZE * inode[f"zone{i}"], 0)
+            f.seek(BLOCK_SIZE * inode[f"zone{i}"])
             sys.stdout.buffer.write(f.read(BLOCK_SIZE).rstrip(b"\0"))
     else:
         sys.stderr.buffer.write(
@@ -363,6 +391,79 @@ def touchfile(f, sbdict, filename):
     add_dir_entry(f, sbdict, filename, inode_num)
 
 
+def allocate_zone(f, sbdict):
+    '''
+    This function finds a free zone, marks it and returns the zone number.
+
+    Input:
+        f (file): The file of the disk image.
+        sbdict (dict): The dictionary with all the data from the superblock.
+
+    Side effects:
+        The zone map is updated.
+
+    Returns:
+        zone_num (int): The zone number of the new zone.
+    '''
+    zone_map = parse_zone_map(f, sbdict)
+    idx = 0
+    while zone_map[idx] == '11111111':
+        idx += 1
+        if idx > len(zone_map):
+            sys.stderr.buffer.write(("Error: no free zones").encode())
+            sys.exit(0)
+    current_bit = zone_map[idx][::-1].index('0')
+    zone_num = idx * 8 + current_bit - 1 + sbdict['first_data']
+
+    # Update the zone map and the zone.
+    zone_map[idx] = zone_map[idx][:7 - current_bit] + '1' + \
+        zone_map[idx][7 - current_bit + 1:]
+    f.seek(BLOCK_SIZE
+           * (2 + math.ceil(sbdict['ninodes'] / 8 / BLOCK_SIZE) + idx))
+    f.write(bytes([int(zone_map[idx], 2)]))
+
+    return zone_num
+
+
+def mkdir(f, sbdict, dirname):
+    '''
+    This function creates a new directory at the specified dirname. If the
+    directory already exists, nothing happens.
+
+    Input:
+        f (file): The file of the disk image.
+        sbdict (dict): The dictionary with all the data from the superblock.
+        dirname (str): The name of the directory.
+
+    Side effects:
+        Creates a new directory at the specified dirname in the disk image.
+    '''
+    if dirname.find('/') != -1:
+        sys.stderr.buffer.write(
+            ("Error: directories can only be created in root").encode())
+        sys.exit(0)
+
+    if find_inode(f, sbdict, dirname) != -1:
+        return
+
+    if (len(dirname) > NAME_LEN):
+        sys.stderr.buffer.write(
+            (f"Error: filename too long, max {NAME_LEN} characters").encode())
+        return
+
+    zone_num = allocate_zone(f, sbdict)
+    inode_num = create_inode(f, sbdict, 'd', zone_num)
+    add_dir_entry(f, sbdict, dirname, inode_num)
+
+    # Add the . and .. entries to the new directory.
+    f.seek(BLOCK_SIZE * zone_num)
+    f.write(struct.pack("<H", inode_num + 1))
+    f.write(b".")
+    f.seek(BLOCK_SIZE * zone_num + NAME_LEN + 2)
+    f.write(struct.pack("<H", 1))
+    f.write(b"..")
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: mfstool.py image command params")
@@ -378,6 +479,8 @@ if __name__ == "__main__":
         sbdata = f.read(BLOCK_SIZE)
 
         sbdict = parse_superblock(sbdata)
+
+        parse_zone_map(f, sbdict)
 
         if sbdict["magic"] == 0x137F:
             NAME_LEN = 14
@@ -399,5 +502,10 @@ if __name__ == "__main__":
                 print("Usage: mfstool.py image touch file")
                 sys.exit(0)
             touchfile(f, sbdict, path)
+        elif cmd == 'mkdir':
+            if (len(sys.argv) < 4):
+                print("Usage: mfstool.py image mkdir directory")
+                sys.exit(0)
+            mkdir(f, sbdict, path)
 
     f.close()
